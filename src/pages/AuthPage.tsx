@@ -49,7 +49,7 @@ export default function AuthPage() {
     if (isAuthenticated()) {
       navigate('/mode', { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, posthog]);
 
   const handleGoogleLogin = () => {
     window.location.href = api.loginUrl();
