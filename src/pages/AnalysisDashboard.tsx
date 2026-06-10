@@ -1,4 +1,3 @@
-console.log("ANALYSIS DASHBOARD LOADED");
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, AlertTriangle, Droplets, Eye as EyeIcon, Fish } from 'lucide-react';
