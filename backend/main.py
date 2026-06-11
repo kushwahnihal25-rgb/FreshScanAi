@@ -705,7 +705,7 @@ async def get_scan_by_id(scan_id: str, current_user=Depends(get_current_user)):
 
 @app.get("/api/v1/vendors")
 async def get_vendors():
-    """Return all vendors with coordinates for the map. Leaderboard is handled by vendors.py router."""
+    """Return all vendors with map coordinates. Leaderboard is handled by vendors.py."""
     try:
         fields = (
             "id, name, address, lat, lng, "
