@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Optional
 from auth import get_current_user, get_google_oauth_url, exchange_code_for_session
+from turnstile import TURNSTILE_SECRET_KEY, verify_turnstile_token
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from rate_limiter import limiter
+
 
 # Load .env file if present (python-dotenv)
 try:
@@ -19,9 +21,10 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, File, Request, UploadFile, Form, HTTPException, Depends, Query
+from fastapi import Body, FastAPI, File, UploadFile, Form, HTTPException, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
+from slowapi import _rate_limit_exceeded_handler
 from supabase import create_client, Client
 from PIL import Image
 
@@ -34,7 +37,6 @@ try:
 except ModuleNotFoundError:
     _torch_available = False
     print("WARNING: PyTorch not installed. Scan endpoints will return 503.")
-
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # All secrets MUST come from environment variables — no hardcoded fallbacks.
@@ -122,6 +124,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.state.limiter = limiter
+app.add_exception_handler(429, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
@@ -337,12 +340,44 @@ async def api_health_check():
     """Health check endpoint — no auth or DB required."""
     return {"status": "ok"}
 
-@app.get("/api/v1/auth/login/google")
-async def login_google():
+def _auth_redirect_url() -> str:
     callback_url = f"{API_BASE_URL}/api/v1/auth/callback"
+    return get_google_oauth_url(redirect_to=callback_url)
+
+
+async def _verify_turnstile(turnstile_token: str | None, request: Request) -> None:
+    if TURNSTILE_SECRET_KEY:
+        client_host = request.client.host if request.client else None
+        await verify_turnstile_token(turnstile_token, client_host)
+
+
+@app.get("/api/v1/auth/login/google")
+@limiter.limit("5/minute")
+async def login_google_get(
+    request: Request,
+    turnstile_token: str | None = Query(None, alias="turnstile_token"),
+):
     try:
-        url = get_google_oauth_url(redirect_to=callback_url)
-        return RedirectResponse(url=url)
+        await _verify_turnstile(turnstile_token, request)
+        return RedirectResponse(url=_auth_redirect_url())
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not generate OAuth URL: {exc}")
+
+
+@app.post("/api/v1/auth/login/google")
+@limiter.limit("5/minute")
+async def login_google_post(
+    request: Request,
+    payload: dict | None = Body(None),
+):
+    turnstile_token = payload.get("turnstile_token") if payload else None
+    try:
+        await _verify_turnstile(turnstile_token, request)
+        return {"redirect_url": _auth_redirect_url()}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Could not generate OAuth URL: {exc}")
 
@@ -545,6 +580,9 @@ async def scan_auto(
     from router import classify_image_type, ImageType
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+
+
     image_type = classify_image_type(img)
 
     if image_type == ImageType.NOT_A_FISH:
@@ -851,6 +889,7 @@ async def generate_gradcam(
     import numpy as np
     from inference import stream_a_model, stream_a_transforms, device
     from router import is_valid_fish_image
+
 
     # Fish validity gate — same gate used by /api/v1/scan-auto
     is_fish, gate_score = is_valid_fish_image(img_pil)
